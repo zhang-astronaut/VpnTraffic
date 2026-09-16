@@ -186,9 +186,12 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         {
             // Self-contained for Compact (subtitle hidden).
             title = $"{pct:0}% · {Localizer.FormatBytes(snap.UsedBytes)}";
-            subtitle = snap.ExpireLocal is { } exp
+            var baseSubtitle = snap.ExpireLocal is { } exp
                 ? $"{Localizer.FormatBytes(snap.LeftBytes)} · {Localizer.ExpireInDays(Math.Max(0, (exp - DateTimeOffset.Now).Days))}"
                 : $"{Localizer.FormatBytes(snap.LeftBytes)} left";
+            subtitle = snap.Error is not null
+                ? $"{baseSubtitle} · {snap.Error}"
+                : baseSubtitle;
         }
         else if (snap.Error is not null)
         {

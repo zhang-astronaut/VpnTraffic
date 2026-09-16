@@ -74,9 +74,28 @@ public sealed class HistoryStore
                     return;
                 }
 
+                // Merge with in-memory samples so a settings reload does not wipe unpersisted points.
+                var merged = new List<HistoryPoint>(_points);
+                merged.AddRange(loaded.Where(static p => p.UsedBytes >= 0));
+                merged.Sort(static (a, b) => a.Timestamp.CompareTo(b.Timestamp));
+                // Dedupe near-identical timestamps.
+                var deduped = new List<HistoryPoint>(merged.Count);
+                foreach (var p in merged)
+                {
+                    if (deduped.Count > 0 &&
+                        (p.Timestamp - deduped[^1].Timestamp).Duration() < TimeSpan.FromSeconds(1) &&
+                        p.UsedBytes == deduped[^1].UsedBytes)
+                    {
+                        deduped[^1] = p;
+                    }
+                    else
+                    {
+                        deduped.Add(p);
+                    }
+                }
+
                 _points.Clear();
-                _points.AddRange(loaded.Where(static p => p.UsedBytes >= 0));
-                _points.Sort(static (a, b) => a.Timestamp.CompareTo(b.Timestamp));
+                _points.AddRange(deduped);
                 TrimLocked();
                 if (_points.Count > 0)
                 {

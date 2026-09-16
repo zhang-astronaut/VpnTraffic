@@ -72,29 +72,50 @@ public sealed class QuotaService : IDisposable
 
     public void RestartLoop()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
-        _cts = new CancellationTokenSource();
-        var token = _cts.Token;
-        _loop = Task.Run(() => RunLoopAsync(token), token);
+        var previous = _cts;
+        var previousLoop = _loop;
+        previous?.Cancel();
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+        _loop = Task.Run(async () =>
+        {
+            if (previousLoop is not null)
+            {
+                try
+                {
+                    await previousLoop.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // previous loop cancelled/faulted
+                }
+            }
+
+            previous?.Dispose();
+            await RunLoopAsync(cts.Token).ConfigureAwait(false);
+        });
     }
 
     public async Task RefreshOnceAsync(CancellationToken ct = default)
     {
-        if (!await _refreshLock.WaitAsync(0, ct).ConfigureAwait(false))
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts?.Token ?? CancellationToken.None);
+        if (!await _refreshLock.WaitAsync(0, linked.Token).ConfigureAwait(false))
         {
             return;
         }
 
         try
         {
+            linked.Token.ThrowIfCancellationRequested();
             AppSettings settings;
             lock (_gate)
             {
                 settings = _settings;
             }
 
-            var snapshot = await _client.FetchAsync(settings.SubscriptionUrl, ct).ConfigureAwait(false);
+            var snapshot = await _client
+                .FetchAsync(settings.SubscriptionUrl, linked.Token)
+                .ConfigureAwait(false);
             if (snapshot.IsSuccess)
             {
                 _history.Add(snapshot);
@@ -112,9 +133,20 @@ public sealed class QuotaService : IDisposable
 
             Updated?.Invoke(this, snapshot);
         }
+        catch (OperationCanceledException)
+        {
+            // shutdown / restart
+        }
         finally
         {
-            _refreshLock.Release();
+            try
+            {
+                _refreshLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // already tearing down
+            }
         }
     }
 
@@ -165,7 +197,8 @@ public sealed class QuotaService : IDisposable
         _cts?.Cancel();
         try
         {
-            _loop?.Wait(TimeSpan.FromSeconds(2));
+            // HttpClient timeout is 15s; join the loop so in-flight work can observe cancel.
+            _loop?.Wait(TimeSpan.FromSeconds(20));
         }
         catch
         {
@@ -174,6 +207,13 @@ public sealed class QuotaService : IDisposable
 
         _cts?.Dispose();
         _client.Dispose();
-        _refreshLock.Dispose();
+        try
+        {
+            _refreshLock.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
     }
 }
