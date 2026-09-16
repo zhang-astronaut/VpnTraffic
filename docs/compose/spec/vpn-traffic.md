@@ -3,7 +3,7 @@ feature: vpn-traffic
 status: delivered
 updated: 2026-09-16
 branch: feat/vpn-traffic-cmdpal
-commits: cec5137..ad99d72
+commits: cec5137..b147c2c
 ---
 
 # VpnTraffic — Command Palette 订阅流量
