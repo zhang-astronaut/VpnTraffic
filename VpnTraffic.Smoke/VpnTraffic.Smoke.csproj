@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>VpnTraffic.Smoke</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\VpnTraffic\Services\QuotaSnapshot.cs" Link="Services\QuotaSnapshot.cs" />
+    <Compile Include="..\VpnTraffic\Services\SubscriptionClient.cs" Link="Services\SubscriptionClient.cs" />
+    <Compile Include="..\VpnTraffic\Services\HistoryStore.cs" Link="Services\HistoryStore.cs" />
+    <Compile Include="..\VpnTraffic\Services\ChartRenderer.cs" Link="Services\ChartRenderer.cs" />
+    <Compile Include="..\VpnTraffic\Localization\Localizer.cs" Link="Localization\Localizer.cs" />
+  </ItemGroup>
+</Project>
