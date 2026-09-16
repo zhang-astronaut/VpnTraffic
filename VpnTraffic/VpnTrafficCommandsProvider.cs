@@ -17,11 +17,14 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
 
     public VpnTrafficCommandsProvider()
     {
+        Diag.Log("provider ctor begin");
         Id = VpnTrafficConstants.ExtensionId;
         DisplayName = Localizer.AppName;
         Icon = new IconInfo("\uE968");
 
-        _settingsManager = new VpnJsonSettingsManager(Utilities.BaseSettingsPath(SettingsFolderName));
+        var settingsPath = Utilities.BaseSettingsPath(SettingsFolderName);
+        Diag.Log("settings path=" + settingsPath);
+        _settingsManager = new VpnJsonSettingsManager(settingsPath);
         _settingsManager.Settings.Add(new TextSetting(
             "subscriptionUrl",
             "Subscription URL",
@@ -103,6 +106,7 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         };
 
         _service.Start(_service.Settings, HistoryFilePath());
+        Diag.Log("provider ctor end");
     }
 
     private const string SettingsFolderName = QuotaService.SettingsFolderName;
