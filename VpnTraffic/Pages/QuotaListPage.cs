@@ -63,7 +63,13 @@ public sealed class QuotaListPage : ListPage
 
             if (snap.Error is not null)
             {
-                _items.Add(StaticItem($"{Localizer.ErrorPrefix}: {snap.Error}",
+                var errText = snap.Error switch
+                {
+                    "no-userinfo" => Localizer.NoQuotaHeader,
+                    "empty-url" => Localizer.ConfigureHint,
+                    _ => snap.Error,
+                };
+                _items.Add(StaticItem($"{Localizer.ErrorPrefix}: {errText}",
                     snap.FetchedAt == default
                         ? string.Empty
                         : $"{Localizer.LastUpdated} {snap.FetchedAt.ToLocalTime():HH:mm:ss}"));

@@ -3,9 +3,25 @@ using System.Net.Http.Headers;
 
 namespace VpnTraffic.Services;
 
-/// <summary>Fetches airport subscription quota from the <c>subscription-userinfo</c> response header.</summary>
+/// <summary>
+/// Fetches airport subscription quota from the <c>subscription-userinfo</c> response header.
+/// Most airports only emit that header for Clash-like User-Agents.
+/// </summary>
 public sealed class SubscriptionClient : IDisposable
 {
+    // Common client UAs that make airport panels return subscription-userinfo.
+    private static readonly string[] UserAgents =
+    [
+        "clash.meta/1.18.0",
+        "ClashforWindows/0.20.39",
+        "ClashforAndroid/2.5.12",
+        "v2rayN/6.23",
+        "Shadowrocket/2.2.0",
+        "Stash/2.5.0",
+        "Quantumult%20X/1.0.30",
+        "VpnTraffic/0.1 (+cmdpal)",
+    ];
+
     private readonly HttpClient _http;
 
     public SubscriptionClient()
@@ -19,7 +35,6 @@ public sealed class SubscriptionClient : IDisposable
         {
             Timeout = TimeSpan.FromSeconds(15),
         };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("VpnTraffic/0.1 (+cmdpal)");
     }
 
     public async Task<QuotaSnapshot> FetchAsync(string url, CancellationToken ct = default)
@@ -35,9 +50,35 @@ public sealed class SubscriptionClient : IDisposable
             return QuotaSnapshot.Empty with { Error = "invalid-url", FetchedAt = DateTimeOffset.Now };
         }
 
+        QuotaSnapshot last = QuotaSnapshot.Empty with { Error = "no-userinfo", FetchedAt = DateTimeOffset.Now };
+
+        foreach (var ua in UserAgents)
+        {
+            ct.ThrowIfCancellationRequested();
+            var attempt = await FetchOnceAsync(uri, ua, ct).ConfigureAwait(false);
+            if (attempt.IsSuccess)
+            {
+                return attempt;
+            }
+
+            // Prefer a successful HTTP response with missing header over network errors for next attempt.
+            last = attempt;
+            // Network / HTTP hard failures: try next UA anyway (some panels filter by UA with 403).
+        }
+
+        return last with { FetchedAt = DateTimeOffset.Now };
+    }
+
+    private async Task<QuotaSnapshot> FetchOnceAsync(Uri uri, string userAgent, CancellationToken ct)
+    {
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+            // Some panels check these as well.
+            request.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+
             using var response = await _http
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
                 .ConfigureAwait(false);
@@ -52,15 +93,10 @@ public sealed class SubscriptionClient : IDisposable
                 };
             }
 
-            string? userInfo = response.Headers.TryGetValues("subscription-userinfo", out var values)
-                ? string.Join(" ", values)
-                : response.Content.Headers.TryGetValues("subscription-userinfo", out var contentValues)
-                    ? string.Join(" ", contentValues)
-                    : null;
-
-            string? profileTitle = response.Headers.TryGetValues("profile-title", out var titles)
-                ? titles.FirstOrDefault()
-                : null;
+            string? userInfo = FirstHeader(response, "subscription-userinfo")
+                ?? FirstHeader(response, "Subscription-Userinfo");
+            string? profileTitle = FirstHeader(response, "profile-title")
+                ?? FirstHeader(response, "Profile-Title");
 
             if (string.IsNullOrWhiteSpace(userInfo))
             {
@@ -72,7 +108,14 @@ public sealed class SubscriptionClient : IDisposable
                 };
             }
 
-            return ParseUserInfo(userInfo, fetchedAt, DecodeProfileTitle(profileTitle));
+            var parsed = ParseUserInfo(userInfo, fetchedAt, DecodeProfileTitle(profileTitle));
+            if (!parsed.IsSuccess && parsed.Error == "parse-failed")
+            {
+                // Header present but unparsable — try next UA; keep last as this error.
+                return parsed;
+            }
+
+            return parsed;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -94,6 +137,21 @@ public sealed class SubscriptionClient : IDisposable
                 FetchedAt = DateTimeOffset.Now,
             };
         }
+    }
+
+    private static string? FirstHeader(HttpResponseMessage response, string name)
+    {
+        if (response.Headers.TryGetValues(name, out var values))
+        {
+            return string.Join(" ", values);
+        }
+
+        if (response.Content.Headers.TryGetValues(name, out var contentValues))
+        {
+            return string.Join(" ", contentValues);
+        }
+
+        return null;
     }
 
     public static QuotaSnapshot ParseUserInfo(string userInfo, DateTimeOffset fetchedAt, string? profileTitle = null)

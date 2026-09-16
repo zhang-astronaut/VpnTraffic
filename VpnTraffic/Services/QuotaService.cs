@@ -116,6 +116,7 @@ public sealed class QuotaService : IDisposable
             var snapshot = await _client
                 .FetchAsync(settings.SubscriptionUrl, linked.Token)
                 .ConfigureAwait(false);
+            Diag.Log($"fetch url-set={!string.IsNullOrWhiteSpace(settings.SubscriptionUrl)} success={snapshot.IsSuccess} error={snapshot.Error} used={snapshot.UsedBytes} total={snapshot.TotalBytes}");
             if (snapshot.IsSuccess)
             {
                 _history.Add(snapshot);

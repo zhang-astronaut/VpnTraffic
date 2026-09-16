@@ -28,7 +28,9 @@ public static class Localizer
     public static string ExpireLabel => IsZh ? "到期" : "Expires";
     public static string Never => IsZh ? "从未" : "Never";
     public static string Unknown => IsZh ? "未知" : "Unknown";
-    public static string NoQuotaHeader => IsZh ? "响应中无 subscription-userinfo" : "No subscription-userinfo header";
+    public static string NoQuotaHeader => IsZh
+        ? "响应中无 subscription-userinfo（已尝试 Clash/ClashMeta 等 UA；请确认链接为订阅地址）"
+        : "No subscription-userinfo header (tried Clash-like UAs; verify this is a subscription URL)";
     public static string ConfigureHint => IsZh ? "请先在设置中填写订阅链接" : "Set your subscription URL in settings";
     public static string RefreshNow => IsZh ? "立即刷新" : "Refresh now";
     public static string HistoryTitle => IsZh ? "用量时间线" : "Usage timeline";
