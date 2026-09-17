@@ -1,6 +1,8 @@
+using VpnTraffic;
+
 namespace VpnTraffic.Services;
 
-public sealed class AppSettings
+public sealed record AppSettings
 {
     public string SubscriptionUrl { get; set; } = string.Empty;
     public int RefreshIntervalSeconds { get; set; } = 60;
@@ -55,6 +57,8 @@ public sealed class QuotaService : IDisposable
         ApplySettings(settings, historyFilePath, reloadHistory: true);
         RestartLoop();
     }
+
+    public void StartLoop() => RestartLoop();
 
     public void ApplySettings(AppSettings settings, string historyFilePath, bool reloadHistory)
     {

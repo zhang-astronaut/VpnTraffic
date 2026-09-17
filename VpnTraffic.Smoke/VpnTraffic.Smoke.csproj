@@ -11,6 +11,9 @@
     <Compile Include="..\VpnTraffic\Services\SubscriptionClient.cs" Link="Services\SubscriptionClient.cs" />
     <Compile Include="..\VpnTraffic\Services\HistoryStore.cs" Link="Services\HistoryStore.cs" />
     <Compile Include="..\VpnTraffic\Services\ChartRenderer.cs" Link="Services\ChartRenderer.cs" />
+    <Compile Include="..\VpnTraffic\Services\AppPaths.cs" Link="Services\AppPaths.cs" />
+    <Compile Include="..\VpnTraffic\Services\SubscriptionCatalog.cs" Link="Services\SubscriptionCatalog.cs" />
+    <Compile Include="..\VpnTraffic\Services\Diag.cs" Link="Services\Diag.cs" />
     <Compile Include="..\VpnTraffic\Localization\Localizer.cs" Link="Localization\Localizer.cs" />
   </ItemGroup>
 </Project>

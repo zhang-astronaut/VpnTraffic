@@ -6,13 +6,86 @@ using VpnTraffic.Services;
 
 namespace VpnTraffic;
 
+public sealed class SubscriptionRuntime : IDisposable
+{
+    public SubscriptionEntry Entry { get; }
+    public QuotaService Service { get; } = new();
+    public WrappedDockItem Dock { get; }
+    public event EventHandler<QuotaSnapshot>? SnapshotUpdated;
+
+    public SubscriptionRuntime(SubscriptionEntry entry, AppSettings global)
+    {
+        Entry = entry;
+        var settings = global with { SubscriptionUrl = entry.Url };
+        Service.ApplySettings(settings, AppPaths.HistoryFile(entry.Id), reloadHistory: true);
+        Service.Updated += OnUpdated;
+        Service.StartLoop();
+
+        Dock = new WrappedDockItem(
+            [BuildItem(QuotaSnapshot.Empty)],
+            entry.Name,
+            "quota:" + entry.Id)
+        {
+            Icon = new IconInfo("\uE968"),
+        };
+    }
+
+    private void OnUpdated(object? sender, QuotaSnapshot snap)
+    {
+        Dock.Items = [BuildItem(snap)];
+        SnapshotUpdated?.Invoke(this, snap);
+    }
+
+    private ListItem BuildItem(QuotaSnapshot snap)
+    {
+        string title;
+        string subtitle;
+        if (snap.Percent is { } pct)
+        {
+            title = $"{Entry.Name} · {pct:0}% · {Localizer.FormatBytes(snap.UsedBytes)}";
+            var baseSubtitle = snap.ExpireLocal is { } exp
+                ? $"{Localizer.FormatBytes(snap.LeftBytes)} · {Localizer.ExpireInDays(Math.Max(0, (exp - DateTimeOffset.Now).Days))}"
+                : $"{Localizer.FormatBytes(snap.LeftBytes)} left";
+            subtitle = snap.Error is not null ? $"{baseSubtitle} · {snap.Error}" : baseSubtitle;
+        }
+        else if (snap.Error is not null)
+        {
+            title = $"{Entry.Name} · ⚠";
+            subtitle = snap.Error;
+        }
+        else
+        {
+            title = Entry.Name;
+            subtitle = Localizer.DockSubtitleNoConfig;
+        }
+
+        return new ListItem(new AnonymousCommand(() => { })
+        {
+            Name = title,
+            Result = CommandResult.KeepOpen(),
+        })
+        {
+            Title = title,
+            Subtitle = subtitle,
+        };
+    }
+
+    public void Dispose()
+    {
+        Service.Updated -= OnUpdated;
+        Service.Dispose();
+    }
+}
+
 public sealed class VpnTrafficCommandsProvider : CommandProvider
 {
-    private readonly QuotaService _service = new();
     private readonly VpnJsonSettingsManager _settingsManager;
-    private readonly CommandItem _topLevel;
-    private readonly WrappedDockItem _dock;
-    private QuotaListPage? _page;
+    private readonly SubscriptionCatalog _catalog = new();
+    private readonly object _runtimeGate = new();
+    private readonly TextSetting _subscriptionsSetting;
+    private List<SubscriptionRuntime> _runtimes = [];
+    private QuotaListPage? _homePage;
+    private CommandItem _topLevel;
     private bool _disposed;
 
     public VpnTrafficCommandsProvider()
@@ -22,23 +95,35 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         DisplayName = Localizer.AppName;
         Icon = new IconInfo("\uE968");
 
-        var settingsPath = Utilities.BaseSettingsPath(SettingsFolderName);
+        AppPaths.EnsureRoot();
+        var settingsPath = AppPaths.SettingsFile;
         Diag.Log("settings path=" + settingsPath);
         _settingsManager = new VpnJsonSettingsManager(settingsPath);
-        _settingsManager.Settings.Add(new TextSetting(
-            "subscriptionUrl",
-            "Subscription URL",
-            "https://example.com/subscription",
+
+        _subscriptionsSetting = new TextSetting(
+            "subscriptions",
+            "Subscriptions",
+            "One per line: Name|https://subscription-url",
             string.Empty)
         {
-            IsRequired = true,
-            Label = "Subscription URL",
-            Description = "Airport subscription link (subscription-userinfo).",
-        });
+            Multiline = true,
+            Placeholder = "Airport A|https://example.com/sub\nAirport B|https://example.com/sub2",
+            Label = "Subscriptions (Name|URL per line)",
+            Description = "Each enabled subscription gets its own Dock band you can pin independently.",
+        };
+        _settingsManager.Settings.Add(_subscriptionsSetting);
+
+        // Keep legacy key so old installs can migrate once.
+        _settingsManager.Settings.Add(new TextSetting(
+            "subscriptionUrl",
+            "Legacy URL (migrated)",
+            "Deprecated single URL; prefer Subscriptions.",
+            string.Empty));
+
         _settingsManager.Settings.Add(new ChoiceSetSetting(
             "refreshIntervalSeconds",
             "Refresh interval",
-            "How often to query the subscription.",
+            "How often to query each subscription.",
             [
                 new("15", "15s"),
                 new("30", "30s"),
@@ -72,71 +157,243 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
             Value = "48",
         });
 
-        _settingsManager.LoadSettings();
+        try
+        {
+            _settingsManager.LoadSettings();
+            Diag.Log("LoadSettings ok fileExists=" + File.Exists(settingsPath));
+        }
+        catch (Exception ex)
+        {
+            Diag.Log("LoadSettings failed: " + ex.Message);
+        }
+
         Settings = _settingsManager.Settings;
         _settingsManager.Settings.SettingsChanged += OnSettingsChanged;
 
-        ApplySettings(reloadHistory: true);
-        _service.Updated += OnQuotaUpdated;
+        _catalog.Load();
+        MigrateLegacyIfNeeded();
+        EnsureSubscriptionsSettingFilled();
 
-        _page = new QuotaListPage(_service);
-        _topLevel = new CommandItem(_page)
+        _homePage = new QuotaListPage(this);
+        _topLevel = new CommandItem(_homePage)
         {
             Title = Localizer.AppName,
             Subtitle = Localizer.DockSubtitleNoConfig,
             Icon = new IconInfo("\uE968"),
         };
 
-        _dock = new WrappedDockItem(
-            [
-                new ListItem(new AnonymousCommand(() => { })
-                {
-                    Name = Localizer.AppName,
-                    Result = CommandResult.KeepOpen(),
-                })
-                {
-                    Title = Localizer.AppName,
-                    Subtitle = Localizer.DockSubtitleNoConfig,
-                },
-            ],
-            Localizer.AppName,
-            "quota")
-        {
-            Icon = new IconInfo("\uE968"),
-        };
-
-        _service.Start(_service.Settings, HistoryFilePath());
-        Diag.Log("provider ctor end");
+        RebuildRuntimes();
+        Diag.Log("provider ctor end runtimes=" + _runtimes.Count);
     }
 
-    private const string SettingsFolderName = QuotaService.SettingsFolderName;
-
-    private static string HistoryFilePath()
+    public IReadOnlyList<SubscriptionRuntime> Runtimes
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            SettingsFolderName);
-        return Path.Combine(dir, "history.json");
+        get
+        {
+            lock (_runtimeGate)
+            {
+                return _runtimes.ToList();
+            }
+        }
+    }
+
+    public SubscriptionCatalog Catalog => _catalog;
+
+    public AppSettings GlobalSettings => new()
+    {
+        RefreshIntervalSeconds = ReadInt("refreshIntervalSeconds", 60),
+        ShowHistoryChart = ReadBool("showHistoryChart", true),
+        PersistHistory = ReadBool("persistHistory", true),
+        MaxHistoryPoints = ReadInt("maxHistoryPoints", 48),
+    };
+
+    private void MigrateLegacyIfNeeded()
+    {
+        var legacy = ReadString("subscriptionUrl");
+        if (string.IsNullOrWhiteSpace(legacy))
+        {
+            return;
+        }
+
+        if (_catalog.MigrateLegacyUrl(legacy, "Default"))
+        {
+            Diag.Log("migrated legacy subscriptionUrl");
+            _catalog.Save();
+        }
+    }
+
+    private void EnsureSubscriptionsSettingFilled()
+    {
+        try
+        {
+            var current = _subscriptionsSetting.Value ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(current))
+            {
+                return;
+            }
+
+            var text = _catalog.ToMultiline();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            _subscriptionsSetting.Value = text;
+            _settingsManager.SaveSettings();
+            Diag.Log("seeded subscriptions setting from catalog");
+        }
+        catch (Exception ex)
+        {
+            Diag.Log("seed subscriptions setting: " + ex.Message);
+        }
     }
 
     private void OnSettingsChanged(object? sender, Settings args)
     {
-        _settingsManager.SaveSettings();
-        ApplySettings(reloadHistory: true);
-        _service.RestartLoop();
+        try
+        {
+            _settingsManager.SaveSettings();
+            Diag.Log("SaveSettings done exists=" + File.Exists(AppPaths.SettingsFile));
+        }
+        catch (Exception ex)
+        {
+            Diag.Log("SaveSettings failed: " + ex.Message);
+        }
+
+        var multiline = ReadString("subscriptions");
+        if (!string.IsNullOrWhiteSpace(multiline))
+        {
+            _catalog.ReplaceFromMultiline(multiline);
+        }
+        else
+        {
+            var legacy = ReadString("subscriptionUrl");
+            _catalog.ReplaceFromMultiline(legacy);
+        }
+
+        _catalog.Save();
+        RebuildRuntimes();
     }
 
-    private void ApplySettings(bool reloadHistory)
+    private void RebuildRuntimes()
     {
-        var settings = new AppSettings
+        var global = GlobalSettings;
+        var enabled = _catalog.EnabledSnapshot();
+        Diag.Log("rebuild runtimes count=" + enabled.Count);
+
+        List<SubscriptionRuntime> next = [];
+        List<SubscriptionRuntime> old;
+        lock (_runtimeGate)
         {
-            SubscriptionUrl = ReadString("subscriptionUrl"),
-            RefreshIntervalSeconds = ReadInt("refreshIntervalSeconds", 60),
-            ShowHistoryChart = ReadBool("showHistoryChart", true),
-            PersistHistory = ReadBool("persistHistory", true),
-            MaxHistoryPoints = ReadInt("maxHistoryPoints", 48),
-        };
-        _service.ApplySettings(settings, HistoryFilePath(), reloadHistory);
+            old = _runtimes;
+        }
+
+        foreach (var entry in enabled)
+        {
+            var existing = old.FirstOrDefault(r =>
+                string.Equals(r.Entry.Id, entry.Id, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(r.Entry.Url, entry.Url, StringComparison.OrdinalIgnoreCase));
+            if (existing is not null &&
+                string.Equals(existing.Entry.Url, entry.Url, StringComparison.Ordinal))
+            {
+                existing.Service.ApplySettings(
+                    global with { SubscriptionUrl = entry.Url },
+                    AppPaths.HistoryFile(entry.Id),
+                    reloadHistory: false);
+                next.Add(existing);
+            }
+            else
+            {
+                if (existing is not null)
+                {
+                    existing.SnapshotUpdated -= OnRuntimeSnapshot;
+                    existing.Dispose();
+                }
+
+                var rt = new SubscriptionRuntime(entry, global);
+                next.Add(rt);
+            }
+        }
+
+        foreach (var r in old)
+        {
+            if (!next.Contains(r))
+            {
+                r.SnapshotUpdated -= OnRuntimeSnapshot;
+                r.Dispose();
+            }
+        }
+
+        foreach (var r in next)
+        {
+            r.SnapshotUpdated -= OnRuntimeSnapshot;
+            r.SnapshotUpdated += OnRuntimeSnapshot;
+        }
+
+        lock (_runtimeGate)
+        {
+            _runtimes = next;
+        }
+
+        if (_homePage is not null)
+        {
+            _homePage.Rebuild();
+        }
+    }
+
+    private void OnRuntimeSnapshot(object? sender, QuotaSnapshot snap)
+    {
+        _homePage?.Rebuild();
+        try
+        {
+            var first = Runtimes.FirstOrDefault();
+            if (first is not null)
+            {
+                _topLevel.Title = first.Entry.Name;
+                if (first.Service.Current.Percent is { } pct)
+                {
+                    _topLevel.Title = $"{first.Entry.Name} · {pct:0}%";
+                    _topLevel.Subtitle = $"{Localizer.FormatBytes(first.Service.Current.UsedBytes)} / {Localizer.FormatBytes(Math.Max(0, first.Service.Current.TotalBytes))}";
+                }
+            }
+        }
+        catch
+        {
+            // ignore UI update failures
+        }
+    }
+
+    public override ICommandItem[] TopLevelCommands() => [_topLevel];
+
+    public override ICommandItem[] GetDockBands()
+    {
+        lock (_runtimeGate)
+        {
+            if (_runtimes.Count == 0)
+            {
+                // Always expose one placeholder band so users can open settings from Dock if needed.
+                return
+                [
+                    new WrappedDockItem(
+                        [new ListItem(new AnonymousCommand(() => { })
+                        {
+                            Name = Localizer.DockSubtitleNoConfig,
+                            Result = CommandResult.KeepOpen(),
+                        })
+                        {
+                            Title = Localizer.AppName,
+                            Subtitle = Localizer.DockSubtitleNoConfig,
+                        }],
+                        Localizer.AppName,
+                        "quota:empty")
+                    {
+                        Icon = new IconInfo("\uE968"),
+                    },
+                ];
+            }
+
+            return _runtimes.Select(static r => (ICommandItem)r.Dock).ToArray();
+        }
     }
 
     private string ReadString(string key)
@@ -170,76 +427,6 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         return fallback;
     }
 
-    private void OnQuotaUpdated(object? sender, QuotaSnapshot snap)
-    {
-        UpdateDock(snap);
-        UpdateTopLevel(snap);
-    }
-
-    private void UpdateDock(QuotaSnapshot snap)
-    {
-        string title;
-        string subtitle;
-        var url = _service.Settings.SubscriptionUrl;
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            title = Localizer.AppName;
-            subtitle = Localizer.DockSubtitleNoConfig;
-        }
-        else if (snap.Percent is { } pct)
-        {
-            // Self-contained for Compact (subtitle hidden).
-            title = $"{pct:0}% · {Localizer.FormatBytes(snap.UsedBytes)}";
-            var baseSubtitle = snap.ExpireLocal is { } exp
-                ? $"{Localizer.FormatBytes(snap.LeftBytes)} · {Localizer.ExpireInDays(Math.Max(0, (exp - DateTimeOffset.Now).Days))}"
-                : $"{Localizer.FormatBytes(snap.LeftBytes)} left";
-            subtitle = snap.Error is not null
-                ? $"{baseSubtitle} · {snap.Error}"
-                : baseSubtitle;
-        }
-        else if (snap.Error is not null)
-        {
-            title = "⚠";
-            subtitle = snap.Error;
-        }
-        else
-        {
-            title = Localizer.AppName;
-            subtitle = Localizer.Unknown;
-        }
-
-        _dock.Items =
-        [
-            new ListItem(new AnonymousCommand(() => { })
-            {
-                Name = title,
-                Result = CommandResult.KeepOpen(),
-            })
-            {
-                Title = title,
-                Subtitle = subtitle,
-            },
-        ];
-    }
-
-    private void UpdateTopLevel(QuotaSnapshot snap)
-    {
-        if (snap.Percent is { } pct)
-        {
-            _topLevel.Title = $"{Localizer.AppName} · {pct:0}%";
-            _topLevel.Subtitle = $"{Localizer.FormatBytes(snap.UsedBytes)} / {Localizer.FormatBytes(Math.Max(0, snap.TotalBytes))}";
-        }
-        else if (!string.IsNullOrWhiteSpace(_service.Settings.SubscriptionUrl) && snap.Error is not null)
-        {
-            _topLevel.Title = Localizer.AppName;
-            _topLevel.Subtitle = $"{Localizer.ErrorPrefix}: {snap.Error}";
-        }
-    }
-
-    public override ICommandItem[] TopLevelCommands() => [_topLevel];
-
-    public override ICommandItem[] GetDockBands() => [_dock];
-
     public override void Dispose()
     {
         if (_disposed)
@@ -249,8 +436,16 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
 
         _disposed = true;
         _settingsManager.Settings.SettingsChanged -= OnSettingsChanged;
-        _service.Updated -= OnQuotaUpdated;
-        _service.Dispose();
+        lock (_runtimeGate)
+        {
+            foreach (var r in _runtimes)
+            {
+                r.Dispose();
+            }
+
+            _runtimes = [];
+        }
+
         base.Dispose();
     }
 }

@@ -1,5 +1,5 @@
 ; Inno Setup script for VpnTraffic Command Palette extension (WinGet)
-#define AppVersion "0.1.0.0"
+#define AppVersion "0.2.0.0"
 #define AppName "VpnTraffic"
 #define AppExe "VpnTraffic.exe"
 

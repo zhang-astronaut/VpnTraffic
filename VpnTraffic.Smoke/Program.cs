@@ -72,5 +72,31 @@ var chart = ChartRenderer.Render(
 ]);
 Check("chart has block chars", chart.Contains('█') && chart.Contains('%'), chart);
 
+// Subscription catalog parse + persist
+var multiline = "Airport A|https://a.example/sub\nAirport B|https://b.example/sub\n# comment\nbad-line-without-url\nhttps://c.example/sub";
+var parsed = SubscriptionCatalog.ParseMultiline(multiline);
+Check("parse multiline count", parsed.Count == 3, parsed.Count.ToString());
+Check("parse names", parsed[0].Name == "Airport A" && parsed[1].Name == "Airport B");
+Check("parse bare url name host", parsed[2].Name.Contains("c.example"), parsed[2].Name);
+Check("parse urls", parsed[0].Url == "https://a.example/sub" && parsed[2].Url == "https://c.example/sub");
+
+var catDir = Path.Combine(Path.GetTempPath(), "vpntraffic-cat-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(catDir);
+// Point AppPaths at temp by writing via catalog methods that use AppPaths — instead test normalize/migrate only.
+var catalog = new SubscriptionCatalog();
+Check("migrate empty url", !catalog.MigrateLegacyUrl(""));
+Check("migrate legacy", catalog.MigrateLegacyUrl("https://legacy.example/sub", "Old"));
+Check("migrate one entry", catalog.Snapshot().Count == 1);
+Check("migrate no overwrite", !catalog.MigrateLegacyUrl("https://other.example/sub"));
+catalog.ReplaceFromMultiline("A|https://a.example/sub\nB|https://b.example/sub");
+Check("replace multiline", catalog.Snapshot().Count == 2);
+Check("enabled snapshot", catalog.EnabledSnapshot().Count == 2);
+Check("multiline roundtrip has pipes", catalog.ToMultiline().Contains("|https://a.example/sub"));
+
+// Settings file path must be a .json file, not a directory
+Check("settings path ends with json", AppPaths.SettingsFile.EndsWith("settings.json", StringComparison.OrdinalIgnoreCase), AppPaths.SettingsFile);
+Check("settings path not LocalState bare", !AppPaths.SettingsFile.EndsWith("LocalState", StringComparison.OrdinalIgnoreCase));
+Check("history per id", AppPaths.HistoryFile("abc").EndsWith("history-abc.json", StringComparison.OrdinalIgnoreCase), AppPaths.HistoryFile("abc"));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"FAILURES={failures}");
 return failures == 0 ? 0 : 1;

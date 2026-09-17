@@ -1,39 +1,20 @@
 ---
 feature: vpn-traffic
-status: delivered
-updated: 2026-09-16
-branch: feat/vpn-traffic-cmdpal
-commits: cec5137..b147c2c
+status: in-progress
+updated: 2026-09-17
+branch: feat/multi-sub-persist
+commits: a1efe67..TBD
 ---
 
 # VpnTraffic — Command Palette 订阅流量
 
 ## Report
 
-**What was built** — PowerToys Command Palette 扩展 `VpnTraffic`：在设置页配置机场订阅链接后，通过 HTTP 响应头 `subscription-userinfo` 读取账号总流量/已用（兼容多设备共用订阅）。Dock 快捷栏以自包含标题展示 `百分比 · 已用`（Compact 可读），Default 模式附带剩余与到期；列表页提供汇总、立即刷新与时间点柱状图。可配置刷新间隔（默认 60s）、是否展示时间线、是否稀疏落盘、历史点数。历史点优先存内存，仅当间隔 ≥15 分钟或用量变化 ≥64 MiB 时原子写 `%LOCALAPPDATA%\VpnTraffic\history.json`，降低 SSD 写入。界面按系统语言 zh/en 切换。MSIX 侧载包已本机安装（`VpnTraffic_0.1.0.0_x64__wggbhrd4kyk4j`）。
-
-**Verification**
-
-| 命令 | 结果 |
-| --- | --- |
-| `dotnet build VpnTraffic/VpnTraffic.csproj -c Release` | PASS（0 warning） |
-| `dotnet run --project VpnTraffic.Smoke -c Release` | ALL PASS（解析/稀疏落盘/图表） |
-| `scripts/build-msix.ps1` + `deploy-local.ps1` | PASS，`Get-AppxPackage VpnTraffic` 0.1.0.0 |
-| CLSID 三处一致 + `com.microsoft.commandpalette` + `internetClient` + `Public/` | PASS |
-
-人工 UI：安装后需在 Command Palette 执行 **Reload Command Palette Extension**，再固定 Dock。本环境无法自动点选 UI，扩展进程 COM 启动已验证可运行。
-
-**Journey log**
-
-1. 精简 shell 缺 `ProgramFiles` 环境变量会导致 NuGet restore `path1 null`，构建前需补全。
-2. Toolkit 0.11 对齐 .NET 10；TFM 用 `net10.0-windows10.0.26100.0`（本机 UAP Platform 只有 26100）。
-3. `JsonSettingsManager` 为 abstract，需子类 `VpnJsonSettingsManager`。
-4. AppExtension `PublicFolder="Public"` 必须在包内实际存在 `Public/` 目录，否则 CmdPal 不易发现。
-5. 审查修复：保留旧成功数据时 Dock 也要显示 Error；Dispose 需取消并等待 HTTP（15s）完成后再释放资源；`HistoryStore.Load` 改为合并而非清空。
-
 ## [S1] Problem
 
 机场/代理订阅用户需要在不登录网页面板的情况下，随时看到订阅总流量、已用与剩余百分比。数据必须来自订阅链接本身的账号配额（多设备共用同一订阅），而不是本机网卡流量。PowerToys Command Palette 的 Dock 快捷栏适合常驻展示，设置页用于配置订阅与刷新策略；同时要降低磁盘写入与请求频率。
+
+**Amendment (0.2)** — 用户报告：重启后已填写的订阅链接会丢失。根因：`Utilities.BaseSettingsPath("VpnTraffic")` 在本机返回包内 `LocalState` **目录**而非 `settings.json` 文件，`JsonSettingsManager.SaveSettings` 无法持久化。另需支持**同时配置多个订阅**，并**分别固定到 Dock**。
 
 ## [S2] Design
 
@@ -46,84 +27,66 @@ commits: cec5137..b147c2c
 | CLSID | `a7c3e91b-5d2f-4b8e-9c1a-6f0d2e8b4a17` |
 | Package Identity Name | `VpnTraffic` |
 | Publisher | `CN=VpnTraffic` |
-| Version | `0.1.0.0` |
+| Version | `0.2.0.0` |
 | AppExtension | `com.microsoft.commandpalette` / Id=`VpnTraffic` / PublicFolder=`Public` |
 | SDK | `Microsoft.CommandPalette.Extensions` 0.11.260520004 |
 | TFM | `net10.0-windows10.0.26100.0` |
 
 三处 CLSID 一致：`[Guid]`、`com:Class Id`、`CmdPalProvider/Activation/CreateInstance ClassId`。
 
-### Data source
+### Persistence (0.2 fix)
 
-HTTP GET 订阅 URL，解析响应头 `subscription-userinfo`：
+- **禁止**单独依赖 `Utilities.BaseSettingsPath` 作为 `JsonSettingsManager.FilePath`。
+- 固定路径：`%LOCALAPPDATA%\VpnTraffic\settings.json`（`AppPaths.SettingsFile`；包内会重定向到 `LocalCache\Local\VpnTraffic\`，与已验证可写的 `history*.json` 同目录）。
+- `SaveSettings` 失败写 `Diag.log`，不静默吞掉。
+- 目录：`subscriptions.json` 为多订阅目录文件；历史：`history-{id}.json`。
 
-```
-upload=<bytes>; download=<bytes>; total=<bytes>; expire=<unix_seconds>
-```
-
-- `used = upload + download`，`percent = used / total`（total≤0 时未知）。
-- 可选 `profile-title`。
-- HttpClient 超时 15s，最多 5 次重定向。
-- 失败时保留上次成功快照并在 Error 字段标注；Dock Subtitle 与列表均展示错误。
-
-### Architecture
+### Multi-subscription + Dock pins
 
 ```text
-VpnTrafficExtension (IExtension, [Guid])
-  └─ VpnTrafficCommandsProvider (CommandProvider)
-       ├─ Settings = VpnJsonSettingsManager (JsonSettingsManager)
-       ├─ TopLevelCommands → QuotaListPage (ListPage)
-       └─ GetDockBands → WrappedDockItem  # 自包含 Title/Subtitle
-
-Services/
-  SubscriptionClient   # HTTP + header → QuotaSnapshot
-  HistoryStore         # 内存采样 + 稀疏落盘合并加载
-  QuotaService         # 定时刷新、保留旧数据+错误、Dispose 可取消 HTTP
-  ChartRenderer        # █░ 时间点柱状图
+VpnTrafficCommandsProvider
+  ├─ SubscriptionCatalog  (Name|URL lines + subscriptions.json)
+  ├─ SubscriptionRuntime[] (each: QuotaService + WrappedDockItem id=quota:{id})
+  ├─ TopLevel → QuotaListPage (all subs)
+  └─ GetDockBands → one band per subscription (user pins independently)
 ```
+
+- 设置项 `subscriptions`：多行 `Name|https://...`（`#` 注释；非法 URL 忽略）。
+- 迁移：若目录空且存在旧键 `subscriptionUrl`，写入目录为 `Default|<url>` 并回填设置表单。
+- 每条订阅独立 `QuotaService` / 历史文件 / Dock 标题 `Name · 45% · 12.3GB`。
+- 无订阅时仍暴露一个 `quota:empty` 占位 band。
+
+### Data source
+
+HTTP GET 订阅 URL，解析响应头 `subscription-userinfo`（多 UA：clash.meta 等）。失败保留上次成功数据并标注 Error。
 
 ### Settings
 
-路径：`Utilities.BaseSettingsPath("VpnTraffic")`
+路径：`%LOCALAPPDATA%\VpnTraffic\settings.json`
 
 | Key | 类型 | 默认 |
 | --- | --- | --- |
-| `subscriptionUrl` | TextSetting | `""` |
-| `refreshIntervalSeconds` | ChoiceSetSetting | `60`（15/30/60/300/900） |
+| `subscriptions` | TextSetting multiline | `""` |
+| `subscriptionUrl` | TextSetting（仅迁移） | `""` |
+| `refreshIntervalSeconds` | ChoiceSetSetting | `60` |
 | `showHistoryChart` | ToggleSetting | `true` |
 | `persistHistory` | ToggleSetting | `true` |
-| `maxHistoryPoints` | ChoiceSetSetting | `48`（24/48/96） |
-
-### Dock
-
-- Title（Compact）：`45% · 12.3GB`
-- Subtitle（Default）：剩余 · 到期；若有刷新错误则追加 ` · {error}`
-- 就地更新 `WrappedDockItem.Items`
+| `maxHistoryPoints` | ChoiceSetSetting | `48` |
 
 ### History & disk wear
 
-- 内存上限 `maxHistoryPoints`；落盘条件：`persistHistory` 且（≥15min 或 ≥64MiB 增量）
-- 文件：`%LOCALAPPDATA%\VpnTraffic\history.json`（temp + replace）
-- Load 合并内存点，避免设置变更清空未落盘采样
-
-### Localization
-
-`CultureInfo.CurrentUICulture` 以 `zh` 开头 → 中文，否则英文。
+- 每订阅 `history-{id}.json`；落盘条件不变（≥15min 或 ≥64MiB）。
+- Load 合并内存点。
 
 ## Out of Scope
 
 - 节点解析 / 代理连通性
-- 多订阅切换
 - 本机网卡流量
-- WinGet / 画廊上架
+- 画廊上架（WinGet 已有 0.1.0 提交）
 
 ## Tasks
 
-- [x] T1: 工程骨架与解决方案 — acceptance: `dotnet build` 通过，manifest 三处 CLSID 一致 (covers: S2)
-- [x] T2: SubscriptionClient + QuotaSnapshot — acceptance: smoke 解析 `subscription-userinfo` (covers: S2)
-- [x] T3: HistoryStore 稀疏落盘 — acceptance: 阈值未达不写盘；达阈值原子写 JSON (covers: S2)
-- [x] T4: QuotaService 定时刷新 + 设置集成 — acceptance: 失败保留上次；Dispose 等待取消 (covers: S2)
-- [x] T5: Dock band 自包含标题 — acceptance: Title 含百分比与已用；错误进 Subtitle (covers: S2)
-- [x] T6: QuotaListPage 汇总+柱状图+zh/en — acceptance: 无配置/错误/成功三态 (covers: S2)
-- [x] T7: MSIX 打包与本地部署 — acceptance: Add-AppxPackage 成功 (covers: S2)
-- [x] T8: 自测清单与文档 — acceptance: Report + 验证表 (covers: S1; covers: S2)
+- [ ] T9: 修复 settings.json 路径与 Save 诊断 — acceptance: 设置后文件存在且重启后 URL 仍在 (covers: S2 Persistence)
+- [ ] T10: SubscriptionCatalog + 多 Runtime/Dock — acceptance: 多行 Name|URL 产生多个 GetDockBands (covers: S2 Multi-sub)
+- [ ] T11: 旧 URL 迁移 + 表单回填 — acceptance: 仅有 subscriptionUrl 时目录与表单被填充 (covers: S2 Multi-sub)
+- [ ] T12: 0.2.0 构建/部署/冒烟 — acceptance: smoke ALL PASS + MSIX 0.2.0.0 安装 (covers: S2)
