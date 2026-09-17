@@ -1,14 +1,31 @@
 ---
 feature: vpn-traffic
-status: in-progress
+status: delivered
 updated: 2026-09-17
 branch: feat/multi-sub-persist
-commits: a1efe67..TBD
+commits: a1efe67..ebacc66
 ---
 
 # VpnTraffic — Command Palette 订阅流量
 
 ## Report
+
+**What was built** — 修复重启后订阅丢失：设置固定写入 `%LOCALAPPDATA%\VpnTraffic\settings.json`（不再使用会返回目录的 `BaseSettingsPath`）。新增多订阅：设置里每行 `Name|URL`，目录持久化于 `subscriptions.json`，每条订阅独立刷新循环、`history-{id}.json` 与 Dock band（`quota:{id}`），可在停靠栏分别固定。旧版单一 `subscriptionUrl` 自动迁移。审查后补上 **Id 按 URL 稳定保留**，避免改无关设置时冲掉 Dock 固定与历史文件。
+
+**Verification**
+
+| 命令 | 结果 |
+| --- | --- |
+| `dotnet build VpnTraffic/VpnTraffic.csproj -c Release` | PASS |
+| `dotnet run --project VpnTraffic.Smoke -c Release` | ALL PASS（含 id preserved by url） |
+| MSIX `build-msix` + `deploy-local` | PASS，`VpnTraffic 0.2.0.0` 已安装 |
+
+**Journey log**
+
+1. `Utilities.BaseSettingsPath` 对打包应用可能返回裸 `LocalState` 目录 → 必须落到具体 `.json` 文件。
+2. Dock 固定身份是构造时的 `quota:{id}` 字符串；目录 Id 漂移会直接丢 pin。
+3. `RaiseItemsChanged` 是 `ListPage` protected，只能在页面子类内调用。
+4. 多订阅用「每行 Name|URL」比动态 Form 列表更贴合 JsonSettingsManager 能力。
 
 ## [S1] Problem
 
@@ -86,7 +103,8 @@ HTTP GET 订阅 URL，解析响应头 `subscription-userinfo`（多 UA：clash.m
 
 ## Tasks
 
-- [ ] T9: 修复 settings.json 路径与 Save 诊断 — acceptance: 设置后文件存在且重启后 URL 仍在 (covers: S2 Persistence)
-- [ ] T10: SubscriptionCatalog + 多 Runtime/Dock — acceptance: 多行 Name|URL 产生多个 GetDockBands (covers: S2 Multi-sub)
-- [ ] T11: 旧 URL 迁移 + 表单回填 — acceptance: 仅有 subscriptionUrl 时目录与表单被填充 (covers: S2 Multi-sub)
-- [ ] T12: 0.2.0 构建/部署/冒烟 — acceptance: smoke ALL PASS + MSIX 0.2.0.0 安装 (covers: S2)
+- [x] T9: 修复 settings.json 路径与 Save 诊断 — acceptance: 设置后文件存在且重启后 URL 仍在 (covers: S2 Persistence)
+- [x] T10: SubscriptionCatalog + 多 Runtime/Dock — acceptance: 多行 Name|URL 产生多个 GetDockBands (covers: S2 Multi-sub)
+- [x] T11: 旧 URL 迁移 + 表单回填 — acceptance: 仅有 subscriptionUrl 时目录与表单被填充 (covers: S2 Multi-sub)
+- [x] T12: 0.2.0 构建/部署/冒烟 — acceptance: smoke ALL PASS + MSIX 0.2.0.0 安装 (covers: S2)
+- [x] T13: Id 按 URL 稳定 — acceptance: 改名后 Id 不变；无关设置不重写目录 (covers: S2 Multi-sub)
