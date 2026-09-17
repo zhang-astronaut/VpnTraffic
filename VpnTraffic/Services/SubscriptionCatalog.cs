@@ -87,13 +87,40 @@ public sealed class SubscriptionCatalog
         }
     }
 
-    /// <summary>Replace catalog from settings multiline text: one "Name|URL" or bare URL per line.</summary>
+    /// <summary>
+    /// Replace catalog from settings multiline text. Preserves existing Id/Enabled by URL
+    /// so CmdPal Dock band pins and history-{id}.json stay stable across settings saves.
+    /// </summary>
     public void ReplaceFromMultiline(string text)
     {
         var parsed = ParseMultiline(text);
         lock (_gate)
         {
-            _entries = Normalize(parsed);
+            var byUrl = _entries
+                .Where(static e => !string.IsNullOrWhiteSpace(e.Url))
+                .GroupBy(static e => e.Url.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(static g => g.Key, static g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            var merged = new List<SubscriptionEntry>();
+            foreach (var e in parsed)
+            {
+                if (byUrl.TryGetValue(e.Url, out var existing))
+                {
+                    merged.Add(new SubscriptionEntry
+                    {
+                        Id = existing.Id,
+                        Name = e.Name,
+                        Url = e.Url,
+                        Enabled = existing.Enabled,
+                    });
+                }
+                else
+                {
+                    merged.Add(e);
+                }
+            }
+
+            _entries = Normalize(merged);
         }
     }
 

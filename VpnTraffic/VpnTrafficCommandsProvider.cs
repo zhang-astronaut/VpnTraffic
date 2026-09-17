@@ -8,7 +8,7 @@ namespace VpnTraffic;
 
 public sealed class SubscriptionRuntime : IDisposable
 {
-    public SubscriptionEntry Entry { get; }
+    public SubscriptionEntry Entry { get; private set; }
     public QuotaService Service { get; } = new();
     public WrappedDockItem Dock { get; }
     public event EventHandler<QuotaSnapshot>? SnapshotUpdated;
@@ -28,6 +28,16 @@ public sealed class SubscriptionRuntime : IDisposable
         {
             Icon = new IconInfo("\uE968"),
         };
+    }
+
+    public void ApplyEntry(SubscriptionEntry entry, AppSettings global)
+    {
+        Entry = entry;
+        Service.ApplySettings(
+            global with { SubscriptionUrl = entry.Url },
+            AppPaths.HistoryFile(entry.Id),
+            reloadHistory: false);
+        Dock.Items = [BuildItem(Service.Current)];
     }
 
     private void OnUpdated(object? sender, QuotaSnapshot snap)
@@ -261,18 +271,36 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         }
 
         var multiline = ReadString("subscriptions");
+        var previous = _catalog.ToMultiline();
         if (!string.IsNullOrWhiteSpace(multiline))
         {
-            _catalog.ReplaceFromMultiline(multiline);
+            // Only rewrite catalog when the text actually changed — preserves Ids on unrelated setting edits.
+            if (!MultilineEquals(previous, multiline))
+            {
+                _catalog.ReplaceFromMultiline(multiline);
+                _catalog.Save();
+            }
         }
         else
         {
             var legacy = ReadString("subscriptionUrl");
-            _catalog.ReplaceFromMultiline(legacy);
+            if (!string.IsNullOrWhiteSpace(legacy) && _catalog.Snapshot().Count == 0)
+            {
+                _catalog.ReplaceFromMultiline(legacy);
+                _catalog.Save();
+            }
         }
 
-        _catalog.Save();
         RebuildRuntimes();
+    }
+
+    private static bool MultilineEquals(string a, string b)
+    {
+        static string Norm(string s) => string.Join('\n',
+            s.Replace("\r\n", "\n").Split('\n', StringSplitOptions.None)
+                .Select(static l => l.Trim())
+                .Where(static l => l.Length > 0));
+        return string.Equals(Norm(a), Norm(b), StringComparison.Ordinal);
     }
 
     private void RebuildRuntimes()
@@ -296,10 +324,14 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
             if (existing is not null &&
                 string.Equals(existing.Entry.Url, entry.Url, StringComparison.Ordinal))
             {
-                existing.Service.ApplySettings(
-                    global with { SubscriptionUrl = entry.Url },
-                    AppPaths.HistoryFile(entry.Id),
-                    reloadHistory: false);
+                existing.ApplyEntry(entry, global);
+                next.Add(existing);
+            }
+            else if (existing is not null &&
+                     string.Equals(existing.Entry.Id, entry.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                // Same stable Id but URL changed — refresh in place so Dock pin stays valid.
+                existing.ApplyEntry(entry, global);
                 next.Add(existing);
             }
             else

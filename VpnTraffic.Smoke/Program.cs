@@ -87,11 +87,17 @@ var catalog = new SubscriptionCatalog();
 Check("migrate empty url", !catalog.MigrateLegacyUrl(""));
 Check("migrate legacy", catalog.MigrateLegacyUrl("https://legacy.example/sub", "Old"));
 Check("migrate one entry", catalog.Snapshot().Count == 1);
+var legacyId = catalog.Snapshot()[0].Id;
 Check("migrate no overwrite", !catalog.MigrateLegacyUrl("https://other.example/sub"));
 catalog.ReplaceFromMultiline("A|https://a.example/sub\nB|https://b.example/sub");
 Check("replace multiline", catalog.Snapshot().Count == 2);
+var idA = catalog.Snapshot().First(e => e.Url.Contains("a.example")).Id;
+catalog.ReplaceFromMultiline("A2|https://a.example/sub\nB|https://b.example/sub");
+var idA2 = catalog.Snapshot().First(e => e.Url.Contains("a.example")).Id;
+Check("id preserved by url on rename", idA == idA2, $"{idA} vs {idA2}");
 Check("enabled snapshot", catalog.EnabledSnapshot().Count == 2);
 Check("multiline roundtrip has pipes", catalog.ToMultiline().Contains("|https://a.example/sub"));
+_ = legacyId;
 
 // Settings file path must be a .json file, not a directory
 Check("settings path ends with json", AppPaths.SettingsFile.EndsWith("settings.json", StringComparison.OrdinalIgnoreCase), AppPaths.SettingsFile);
