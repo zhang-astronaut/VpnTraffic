@@ -232,6 +232,7 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         _catalog.Save();
         SyncSubscriptionsText();
         RebuildRuntimes();
+        error = string.Empty;
         return true;
     }
 
