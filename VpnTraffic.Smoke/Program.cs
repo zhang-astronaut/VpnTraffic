@@ -97,6 +97,10 @@ var idA2 = catalog.Snapshot().First(e => e.Url.Contains("a.example")).Id;
 Check("id preserved by url on rename", idA == idA2, $"{idA} vs {idA2}");
 Check("enabled snapshot", catalog.EnabledSnapshot().Count == 2);
 Check("multiline roundtrip has pipes", catalog.ToMultiline().Contains("|https://a.example/sub"));
+Check("add rejects duplicate url", !catalog.Add("dup", "https://a.example/sub", out var dupCode) && dupCode == "duplicate");
+Check("add rejects invalid", !catalog.Add("bad", "not-a-url", out var badCode) && badCode == "invalid-url");
+Check("add ok", catalog.Add("C", "https://c2.example/sub", out _) && catalog.Snapshot().Count == 3);
+Check("remove ok", catalog.Remove(catalog.Snapshot().First(e => e.Name == "C").Id) && catalog.Snapshot().Count == 2);
 _ = legacyId;
 
 // Settings file path must be a .json file, not a directory

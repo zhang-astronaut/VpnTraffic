@@ -36,6 +36,20 @@ public sealed class QuotaListPage : ListPage
             var runtimes = _provider.Runtimes;
             var global = _provider.GlobalSettings;
 
+            var addPage = new AddSubscriptionPage(_provider);
+            _items.Add(new ListItem(new AnonymousCommand(() => { })
+            {
+                Name = Localizer.AddSubscription,
+                Result = CommandResult.GoToPage(new GoToPageArgs
+                {
+                    PageId = addPage.Id,
+                }),
+            })
+            {
+                Title = Localizer.AddSubscription,
+                Subtitle = Localizer.UrlLabel,
+            });
+
             if (runtimes.Count == 0)
             {
                 _items.Add(StaticItem(
@@ -68,7 +82,27 @@ public sealed class QuotaListPage : ListPage
         AppSettings global,
         SubscriptionRuntime rt)
     {
-        _items.Add(StaticItem(entry.Name, TrimUrl(entry.Url)));
+        var remove = new AnonymousCommand(() =>
+        {
+            _provider.TryRemoveSubscription(entry.Id, out _);
+            Rebuild();
+        })
+        {
+            Name = Localizer.RemoveSubscription,
+            Result = CommandResult.KeepOpen(),
+        };
+
+        _items.Add(new ListItem(new AnonymousCommand(() => { })
+        {
+            Name = entry.Name,
+            Result = CommandResult.KeepOpen(),
+        })
+        {
+            Title = entry.Name,
+            Subtitle = TrimUrl(entry.Url),
+            MoreCommands = [new CommandContextItem(remove)],
+            Details = BuildDetails(entry, snap),
+        });
 
         if (snap.Error is not null)
         {
@@ -76,6 +110,7 @@ public sealed class QuotaListPage : ListPage
             {
                 "no-userinfo" => Localizer.NoQuotaHeader,
                 "empty-url" => Localizer.ConfigureHint,
+                "http-403" => Localizer.Http403Hint,
                 _ => snap.Error,
             };
             _items.Add(StaticItem(

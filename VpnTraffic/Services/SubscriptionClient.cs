@@ -10,30 +10,37 @@ namespace VpnTraffic.Services;
 public sealed class SubscriptionClient : IDisposable
 {
     // Common client UAs that make airport panels return subscription-userinfo.
+    // Order matters: try Clash-family first (most likely to include the header and pass 403).
     private static readonly string[] UserAgents =
     [
         "clash.meta/1.18.0",
+        "Clash.Meta/1.18.0",
+        "mihomo/1.18.0",
         "ClashforWindows/0.20.39",
         "ClashforAndroid/2.5.12",
+        "clash-verge/v1.6.6",
         "v2rayN/6.23",
         "Shadowrocket/2.2.0",
         "Stash/2.5.0",
         "Quantumult%20X/1.0.30",
-        "VpnTraffic/0.1 (+cmdpal)",
+        "HiddifyNext/1.5.0",
+        "sing-box/1.8.0",
     ];
 
     private readonly HttpClient _http;
 
     public SubscriptionClient()
     {
-        _http = new HttpClient(new HttpClientHandler
+        var handler = new HttpClientHandler
         {
             AllowAutoRedirect = true,
             MaxAutomaticRedirections = 5,
             UseCookies = false,
-        })
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        };
+        _http = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(15),
+            Timeout = TimeSpan.FromSeconds(20),
         };
     }
 
@@ -61,9 +68,8 @@ public sealed class SubscriptionClient : IDisposable
                 return attempt;
             }
 
-            // Prefer a successful HTTP response with missing header over network errors for next attempt.
             last = attempt;
-            // Network / HTTP hard failures: try next UA anyway (some panels filter by UA with 403).
+            // Once we see a hard 403 with a Clash UA, further UAs rarely help — still try a couple.
         }
 
         return last with { FetchedAt = DateTimeOffset.Now };
@@ -75,9 +81,13 @@ public sealed class SubscriptionClient : IDisposable
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
-            // Some panels check these as well.
-            request.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+            request.Headers.Accept.ParseAdd("*/*");
+            request.Headers.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9,en;q=0.8");
+            request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
+            // Many panels WAF-check Referer/Origin against the subscription host.
+            var origin = uri.GetLeftPart(UriPartial.Authority);
+            request.Headers.TryAddWithoutValidation("Referer", origin + "/");
+            request.Headers.TryAddWithoutValidation("Origin", origin);
 
             using var response = await _http
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
@@ -86,9 +96,11 @@ public sealed class SubscriptionClient : IDisposable
             var fetchedAt = DateTimeOffset.Now;
             if (!response.IsSuccessStatusCode)
             {
+                var code = (int)response.StatusCode;
+                Diag.Log($"fetch http {code} ua={userAgent} url-host={uri.Host}");
                 return QuotaSnapshot.Empty with
                 {
-                    Error = $"http-{(int)response.StatusCode}",
+                    Error = $"http-{code}",
                     FetchedAt = fetchedAt,
                 };
             }
@@ -100,6 +112,7 @@ public sealed class SubscriptionClient : IDisposable
 
             if (string.IsNullOrWhiteSpace(userInfo))
             {
+                Diag.Log($"fetch 200 but no-userinfo ua={userAgent} host={uri.Host}");
                 return QuotaSnapshot.Empty with
                 {
                     Error = "no-userinfo",
@@ -111,7 +124,6 @@ public sealed class SubscriptionClient : IDisposable
             var parsed = ParseUserInfo(userInfo, fetchedAt, DecodeProfileTitle(profileTitle));
             if (!parsed.IsSuccess && parsed.Error == "parse-failed")
             {
-                // Header present but unparsable — try next UA; keep last as this error.
                 return parsed;
             }
 

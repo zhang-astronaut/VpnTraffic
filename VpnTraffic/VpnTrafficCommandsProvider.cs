@@ -96,6 +96,7 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
     private List<SubscriptionRuntime> _runtimes = [];
     private QuotaListPage? _homePage;
     private CommandItem _topLevel;
+    private CommandItem _addCommand;
     private bool _disposed;
 
     public VpnTrafficCommandsProvider()
@@ -191,6 +192,12 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
             Subtitle = Localizer.DockSubtitleNoConfig,
             Icon = new IconInfo("\uE968"),
         };
+        _addCommand = new CommandItem(new Pages.AddSubscriptionPage(this))
+        {
+            Title = Localizer.AddSubscription,
+            Subtitle = Localizer.UrlLabel,
+            Icon = new IconInfo("\uE968"),
+        };
 
         RebuildRuntimes();
         Diag.Log("provider ctor end runtimes=" + _runtimes.Count);
@@ -208,6 +215,52 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
     }
 
     public SubscriptionCatalog Catalog => _catalog;
+
+    public bool TryAddSubscription(string name, string url, out string error)
+    {
+        if (!_catalog.Add(name, url, out var code))
+        {
+            error = code switch
+            {
+                "invalid-url" => Localizer.InvalidUrl,
+                "duplicate" => Localizer.DuplicateEntry,
+                _ => Localizer.Unknown,
+            };
+            return false;
+        }
+
+        _catalog.Save();
+        SyncSubscriptionsText();
+        RebuildRuntimes();
+        return true;
+    }
+
+    public bool TryRemoveSubscription(string id, out string error)
+    {
+        if (!_catalog.Remove(id))
+        {
+            error = Localizer.Unknown;
+            return false;
+        }
+
+        _catalog.Save();
+        SyncSubscriptionsText();
+        RebuildRuntimes();
+        error = string.Empty;
+        return true;
+    }
+
+    private void SyncSubscriptionsText()
+    {
+        try
+        {
+            _subscriptionsSetting.Value = _catalog.ToMultiline();
+        }
+        catch (Exception ex)
+        {
+            Diag.Log("sync subscriptions text: " + ex.Message);
+        }
+    }
 
     public AppSettings GlobalSettings => new()
     {
@@ -395,7 +448,7 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         }
     }
 
-    public override ICommandItem[] TopLevelCommands() => [_topLevel];
+    public override ICommandItem[] TopLevelCommands() => [_topLevel, _addCommand];
 
     public override ICommandItem[] GetDockBands()
     {

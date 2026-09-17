@@ -38,6 +38,58 @@ public sealed class SubscriptionCatalog
     public IReadOnlyList<SubscriptionEntry> EnabledSnapshot() =>
         Snapshot().Where(static e => e.Enabled && e.IsValid).ToList();
 
+    public bool Add(string name, string url) => Add(name, url, out _);
+
+    public bool Add(string name, string url, out string error)
+    {
+        url = (url ?? string.Empty).Trim();
+        name = (name ?? string.Empty).Trim();
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            error = "invalid-url";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = GuessName(url);
+        }
+
+        lock (_gate)
+        {
+            if (_entries.Any(e => string.Equals(e.Url, url, StringComparison.OrdinalIgnoreCase)))
+            {
+                error = "duplicate";
+                return false;
+            }
+
+            _entries.Add(new SubscriptionEntry
+            {
+                Name = name,
+                Url = url,
+                Enabled = true,
+            });
+            error = string.Empty;
+            return true;
+        }
+    }
+
+    public bool Remove(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            var before = _entries.Count;
+            _entries.RemoveAll(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
+            return _entries.Count < before;
+        }
+    }
+
     public void Load()
     {
         lock (_gate)
@@ -96,15 +148,16 @@ public sealed class SubscriptionCatalog
         var parsed = ParseMultiline(text);
         lock (_gate)
         {
-            var byUrl = _entries
-                .Where(static e => !string.IsNullOrWhiteSpace(e.Url))
-                .GroupBy(static e => e.Url.Trim(), StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(static g => g.Key, static g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var byNameUrl = new Dictionary<string, SubscriptionEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in _entries)
+            {
+                byNameUrl[Key(e.Url, e.Name)] = e;
+            }
 
             var merged = new List<SubscriptionEntry>();
             foreach (var e in parsed)
             {
-                if (byUrl.TryGetValue(e.Url, out var existing))
+                if (byNameUrl.TryGetValue(Key(e.Url, e.Name), out var existing))
                 {
                     merged.Add(new SubscriptionEntry
                     {
@@ -112,6 +165,19 @@ public sealed class SubscriptionCatalog
                         Name = e.Name,
                         Url = e.Url,
                         Enabled = existing.Enabled,
+                    });
+                }
+                else if (_entries.FirstOrDefault(x =>
+                             string.Equals(x.Url, e.Url, StringComparison.OrdinalIgnoreCase)) is { } urlMatch
+                         && _entries.Count(x => string.Equals(x.Url, e.Url, StringComparison.OrdinalIgnoreCase)) == 1)
+                {
+                    // Unique URL match: keep Id even if renamed.
+                    merged.Add(new SubscriptionEntry
+                    {
+                        Id = urlMatch.Id,
+                        Name = e.Name,
+                        Url = e.Url,
+                        Enabled = urlMatch.Enabled,
                     });
                 }
                 else
@@ -122,6 +188,9 @@ public sealed class SubscriptionCatalog
 
             _entries = Normalize(merged);
         }
+
+        static string Key(string url, string name) =>
+            (url ?? string.Empty).Trim() + "\n" + (name ?? string.Empty).Trim();
     }
 
     public string ToMultiline()
@@ -237,6 +306,7 @@ public sealed class SubscriptionCatalog
             }
 
             var url = e.Url.Trim();
+            // Same subscription URL is one entry (one Dock band / one quota).
             if (!seen.Add(url))
             {
                 continue;
