@@ -1,4 +1,5 @@
 using System.Globalization;
+using VpnTraffic;
 using VpnTraffic.Services;
 
 // Smoke-test pure service logic without WinRT host.
@@ -102,6 +103,19 @@ Check("add rejects invalid", !catalog.Add("bad", "not-a-url", out var badCode) &
 Check("add ok", catalog.Add("C", "https://c2.example/sub", out _) && catalog.Snapshot().Count == 3);
 Check("remove ok", catalog.Remove(catalog.Snapshot().First(e => e.Name == "C").Id) && catalog.Snapshot().Count == 2);
 _ = legacyId;
+
+// DisplayFormat: Title must lead with percent/used, not airport name.
+var entry = new SubscriptionEntry { Name = "MyAirport", Url = "https://x.example/sub", Id = "abc" };
+var good = SubscriptionClient.ParseUserInfo("upload=0; download=1073741824; total=10737418240; expire=0", DateTimeOffset.Now);
+var (t, s) = DisplayFormat.Dock(entry, good);
+Check("dock title metrics first", t.StartsWith("10%") && t.Contains("GB") && !t.StartsWith("MyAirport"), t);
+Check("dock subtitle has name", s.Contains("MyAirport"), s);
+var (lt, ls) = DisplayFormat.ListRow(entry, good);
+Check("list title has used/total", lt.Contains("/") && lt.StartsWith("10%"), lt);
+var badSnap = QuotaSnapshot.Empty with { Error = "http-403", FetchedAt = DateTimeOffset.Now };
+var (bt, bs) = DisplayFormat.Dock(entry, badSnap);
+Check("dock error title short", bt.StartsWith("⚠") && bt.Contains("403"), bt);
+Check("dock error subtitle name", bs.Contains("MyAirport"), bs);
 
 // Settings file path must be a .json file, not a directory
 Check("settings path ends with json", AppPaths.SettingsFile.EndsWith("settings.json", StringComparison.OrdinalIgnoreCase), AppPaths.SettingsFile);

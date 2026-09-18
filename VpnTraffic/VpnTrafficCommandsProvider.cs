@@ -48,27 +48,7 @@ public sealed class SubscriptionRuntime : IDisposable
 
     private ListItem BuildItem(QuotaSnapshot snap)
     {
-        string title;
-        string subtitle;
-        if (snap.Percent is { } pct)
-        {
-            title = $"{Entry.Name} · {pct:0}% · {Localizer.FormatBytes(snap.UsedBytes)}";
-            var baseSubtitle = snap.ExpireLocal is { } exp
-                ? $"{Localizer.FormatBytes(snap.LeftBytes)} · {Localizer.ExpireInDays(Math.Max(0, (exp - DateTimeOffset.Now).Days))}"
-                : $"{Localizer.FormatBytes(snap.LeftBytes)} left";
-            subtitle = snap.Error is not null ? $"{baseSubtitle} · {snap.Error}" : baseSubtitle;
-        }
-        else if (snap.Error is not null)
-        {
-            title = $"{Entry.Name} · ⚠";
-            subtitle = snap.Error;
-        }
-        else
-        {
-            title = Entry.Name;
-            subtitle = Localizer.DockSubtitleNoConfig;
-        }
-
+        var (title, subtitle) = DisplayFormat.Dock(Entry, snap);
         return new ListItem(new AnonymousCommand(() => { })
         {
             Name = title,
@@ -432,16 +412,15 @@ public sealed class VpnTrafficCommandsProvider : CommandProvider
         _homePage?.Rebuild();
         try
         {
-            var first = Runtimes.FirstOrDefault();
-            if (first is not null)
+            var rt = sender as SubscriptionRuntime ?? Runtimes.FirstOrDefault();
+            if (rt is null)
             {
-                _topLevel.Title = first.Entry.Name;
-                if (first.Service.Current.Percent is { } pct)
-                {
-                    _topLevel.Title = $"{first.Entry.Name} · {pct:0}%";
-                    _topLevel.Subtitle = $"{Localizer.FormatBytes(first.Service.Current.UsedBytes)} / {Localizer.FormatBytes(Math.Max(0, first.Service.Current.TotalBytes))}";
-                }
+                return;
             }
+
+            var (title, subtitle) = DisplayFormat.Dock(rt.Entry, rt.Service.Current);
+            _topLevel.Title = title;
+            _topLevel.Subtitle = subtitle;
         }
         catch
         {

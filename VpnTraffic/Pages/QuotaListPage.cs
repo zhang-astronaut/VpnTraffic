@@ -92,53 +92,41 @@ public sealed class QuotaListPage : ListPage
             Result = CommandResult.KeepOpen(),
         };
 
+        var (primary, secondary) = DisplayFormat.ListRow(entry, snap);
+
         _items.Add(new ListItem(new AnonymousCommand(() => { })
         {
-            Name = entry.Name,
+            Name = primary,
             Result = CommandResult.KeepOpen(),
         })
         {
-            Title = entry.Name,
-            Subtitle = TrimUrl(entry.Url),
+            Title = primary,
+            Subtitle = secondary,
             MoreCommands = [new CommandContextItem(remove)],
             Details = BuildDetails(entry, snap),
         });
 
         if (snap.Error is not null)
         {
-            var errText = snap.Error switch
-            {
-                "no-userinfo" => Localizer.NoQuotaHeader,
-                "empty-url" => Localizer.ConfigureHint,
-                "http-403" => Localizer.Http403Hint,
-                _ => snap.Error,
-            };
+            // Title shows metrics when quota exists; error lives on Subtitle + this hint row.
             _items.Add(StaticItem(
-                $"{Localizer.ErrorPrefix}: {errText}",
-                snap.FetchedAt == default
-                    ? string.Empty
-                    : $"{Localizer.LastUpdated} {snap.FetchedAt.ToLocalTime():HH:mm:ss}"));
+                DisplayFormat.ErrorHint(snap.Error),
+                $"{Localizer.LastUpdated} {(snap.FetchedAt == default ? Localizer.Never : snap.FetchedAt.ToLocalTime().ToString("HH:mm:ss"))}"));
         }
 
-        if (snap.HasUsed)
+        if (snap.HasUsed && snap.Percent is { } p)
         {
             _items.Add(StaticItem(
-                $"{Localizer.UsedLabel}: {Localizer.FormatBytes(snap.UsedBytes)}",
-                snap.Percent is { } p ? $"{ChartRenderer.MiniBar(p)} {p:0}%" : Localizer.Unknown));
-        }
-
-        if (snap.HasTotal)
-        {
-            _items.Add(StaticItem(
-                $"{Localizer.TotalLabel}: {Localizer.FormatBytes(snap.TotalBytes)}",
-                $"{Localizer.LeftLabel}: {Localizer.FormatBytes(snap.LeftBytes)}"));
+                $"{ChartRenderer.MiniBar(p, 12)} {p:0}%",
+                $"{Localizer.UsedLabel} {Localizer.FormatBytes(snap.UsedBytes)}"
+                    + (snap.HasTotal ? $" / {Localizer.FormatBytes(snap.TotalBytes)}" : string.Empty)));
         }
 
         if (snap.ExpireLocal is { } expire)
         {
             var days = (expire - DateTimeOffset.Now).Days;
             _items.Add(StaticItem(
-                $"{Localizer.ExpireLabel}: {expire:yyyy-MM-dd}",
+                $"{Localizer.ExpireLabel} {expire:yyyy-MM-dd}",
                 Localizer.ExpireInDays(Math.Max(0, days))));
         }
 
@@ -147,12 +135,12 @@ public sealed class QuotaListPage : ListPage
             _ = rt.Service.RefreshOnceAsync();
         })
         {
-            Name = $"{Localizer.RefreshNow} ({entry.Name})",
+            Name = $"{Localizer.RefreshNow} · {entry.Name}",
             Result = CommandResult.KeepOpen(),
         })
         {
-            Title = $"{Localizer.RefreshNow} · {entry.Name}",
-            Subtitle = $"{Localizer.LastUpdated}: {(snap.FetchedAt == default ? Localizer.Never : snap.FetchedAt.ToLocalTime().ToString("HH:mm:ss"))}",
+            Title = $"{Localizer.RefreshNow} · {primary}",
+            Subtitle = $"{entry.Name} · {(snap.FetchedAt == default ? Localizer.Never : snap.FetchedAt.ToLocalTime().ToString("HH:mm:ss"))}",
             Details = BuildDetails(entry, snap),
         });
 
@@ -166,8 +154,8 @@ public sealed class QuotaListPage : ListPage
                 Result = CommandResult.KeepOpen(),
             })
             {
-                Title = $"{Localizer.HistoryTitle} · {entry.Name}",
-                Subtitle = points.Count == 0 ? Localizer.Never : $"{points.Count} pts",
+                Title = $"{Localizer.HistoryTitle} · {primary}",
+                Subtitle = $"{entry.Name} · {(points.Count == 0 ? Localizer.Never : points.Count + " pts")}",
                 Details = new Details
                 {
                     Title = entry.Name,
